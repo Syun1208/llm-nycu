@@ -1,0 +1,15 @@
+.env
+/*/data/
+**/logs/
+**/outputs/
+**/runs/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+**/*.pytest_cache/
+**/*.zip
+**/*.tex
+**/notebooks/*.csv
+**/*.csv
+docs/report
+docs/Asg1_314540080.pdf

@@ -1,0 +1,15 @@
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch==2.5.1+cu121
+numpy<2.3
+pandas
+matplotlib
+scikit-learn
+ipykernel
+kaggle
+seaborn
+tqdm
+psutil
+ipywidgets
+jupyter
+python-dotenv
+pytest
