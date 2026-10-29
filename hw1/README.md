@@ -1,30 +1,19 @@
 # NYCU LLM Homework 1
 
+## Overview
+
 Problem 1 identifies the language of a text (English, French, Spanish, Portuguese, German) with character-level
 bigram, trigram, RNN and LSTM language models. Problem 2 scores the semantic similarity of patent phrases with a
 Transformer encoder written from scratch and submits the predictions to the course Kaggle competition.
 
-## Layout
+## Highlights
 
-```
-hw1/
-├── main.py                     # only Python entry point: subcommands p1, p2, p2-heads
-├── requirements.txt
-├── data/problem1, data/problem2
-├── docs/LLM_hw1.pdf
-├── scripts/                    # one .sh per task, each calls main.py
-├── tests/                      # pytest, mirrors src/
-└── src/
-    ├── data/classes/           # Vocabulary, Split, settings, result value objects
-    ├── data/loaders/           # csv loading, vocabularies, batching
-    ├── interface/              # LanguageModel protocol
-    ├── models/                 # n-gram, char RNN/LSTM, Transformer regressor
-    ├── services/               # training, evaluation, pipelines, result store
-    ├── utils/                  # seed, metrics, timing, plotting, progress, logging, .env
-    └── notebooks/              # hw1_1_314540080.ipynb and hw1_2_314540080.ipynb (self-contained, for submission)
-```
+- RNN and LSTM cells written from scratch and checked against `nn.RNN` and `nn.LSTM` in `tests/`.
+- Multi-head attention and the encoder layer written from scratch, no pretrained weights or external data.
+- Problem 2 ensemble of 24 regressors with RE2 alignment blocks and a MatchPyramid interaction branch, plus
+  character-level and anchor neighbour features built from `train.csv` only.
 
-## Setup
+## Installation
 
 ```bash
 conda create -n llm-hw1 python=3.11
@@ -32,24 +21,31 @@ conda activate llm-hw1
 pip install -r requirements.txt
 ```
 
-## Run
+## Dataset Preparation
 
-```bash
-bash scripts/p1_language_id.sh          # Problem 1, outputs/<date>_p1_language_id/
-bash scripts/p2_ensemble_submission.sh  # Problem 2 ensemble + submission.csv, outputs/<date>_p2_v9/
-bash scripts/p2_head_comparison.sh      # Problem 2 (c), outputs/<date>_p2_head_comparison/
-python -m pytest tests
+```
+data/
+├── problem1/   train.csv, val.csv, test.csv
+└── problem2/   train.csv, val.csv, test.csv, sample_submission.csv
 ```
 
-Each script fixes its GPU with `CUDA_VISIBLE_DEVICES`; edit the number in the script to change it. Extra arguments are
-forwarded to `main.py`, for example `bash scripts/p1_language_id.sh --epochs 20`. Logs are written to `logs/`.
+## Training
+
+| Task | Command | Output |
+|---|---|---|
+| Problem 1 | `bash scripts/p1_language_id.sh` | `outputs/<date>_p1_language_id/` |
+| Problem 2 ensemble and submission | `bash scripts/p2_ensemble_submission.sh` | `outputs/<date>_p2_v15/submission.csv` |
+| Problem 2 (c) head comparison | `bash scripts/p2_head_comparison.sh` | `outputs/<date>_p2_head_comparison/` |
+| Tests | `python -m pytest tests` | |
+
+Each script fixes its GPU with `CUDA_VISIBLE_DEVICES`, so edit the number in the script to change it. Extra arguments
+are forwarded to `main.py`, for example `bash scripts/p2_ensemble_submission.sh --seeds 42` for a 12-model run.
 
 ## Results
 
 ### Problem 1: language identification (test set, 700 texts)
 
-RNN and LSTM are implemented from scratch and trained for 40 epochs, keeping the checkpoint with the lowest
-validation perplexity for each language.
+RNN and LSTM are trained for 40 epochs, keeping the checkpoint with the lowest validation perplexity for each language.
 
 | Model | Accuracy | Macro-F1 | Val PPL | Test PPL | Train / build time | Peak memory | Inference time |
 |---|---|---|---|---|---|---|---|
@@ -60,11 +56,21 @@ validation perplexity for each language.
 
 ### Problem 2: semantic similarity (Kaggle)
 
-The final submission averages 12 Transformer regressors trained from scratch (validation Pearson 0.6645) and scores
-0.68935 on the public leaderboard, ranked first.
+| Model | Val Pearson | Val RMSE | Kaggle public |
+|---|---|---|---|
+| Main model, 4 heads, mean pooling | 0.4547 | 0.2427 | |
+| Ensemble of 24 (12 configurations, 2 seeds) | **0.7251** | **0.1779** | **0.73530** |
 
 ![Kaggle leaderboard](images/leaderboard.png)
 
 ## Submission
 
 The two notebooks in `src/notebooks/` are self-contained and are the files to submit as `hw1_314540080.zip`.
+
+## Acknowledgements
+
+- [Attention Is All You Need](https://arxiv.org/abs/1706.03762), Vaswani et al., NeurIPS 2017, for the encoder.
+- [Simple and Effective Text Matching with Richer Alignment Features](https://arxiv.org/abs/1908.00300), Yang et al.,
+  ACL 2019, for the RE2 alignment blocks.
+- [Text Matching as Image Recognition](https://arxiv.org/abs/1602.06359), Pang et al., AAAI 2016, for the MatchPyramid
+  branch.

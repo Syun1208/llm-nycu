@@ -43,6 +43,7 @@ class SimilaritySettings:
     optimizer: OptimizerName = "adamw"
     scheduler: SchedulerName = "cosine"
     min_learning_rate: float = 1e-5
+    neighbour_temperature: float = 8.0
 
     def __post_init__(self) -> None:
         if self.embedding_dim % 8 != 0:
@@ -76,6 +77,17 @@ class EnsembleMember:
     frozen=True,
     slots=True,
 )
+class SimilarityPreset:
+    members: tuple[EnsembleMember, ...]
+    pair_features: bool = False
+    neighbour_features: bool = False
+    interaction: bool = False
+
+
+@dataclass(
+    frozen=True,
+    slots=True,
+)
 class LanguageIdRunConfig:
     data_dir: Path
     output_dir: Path
@@ -93,6 +105,6 @@ class SimilarityRunConfig:
     data_dir: Path
     output_dir: Path
     device_id: int
-    members: tuple[EnsembleMember, ...]
-    seed: int = 42
+    preset: SimilarityPreset
+    seeds: tuple[int, ...] = (42,)
     settings: SimilaritySettings = field(default_factory=SimilaritySettings)

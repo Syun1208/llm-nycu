@@ -22,6 +22,14 @@ POSITIONAL_BASE = 10000.0
 MAX_POSITIONS = 5000
 MASK_FILL = -1e4
 COUNT_FLOOR = 1e-9
+ALIGNMENT_BLOCKS = 2
+FUSION_INPUTS = 4
+PYRAMID_CHANNELS = 3
+PYRAMID_HIDDEN = 16
+PYRAMID_OUTPUT = 32
+PYRAMID_KERNEL = 3
+PYRAMID_GRID = 4
+PYRAMID_FEATURES = PYRAMID_OUTPUT * PYRAMID_GRID * PYRAMID_GRID
 
 
 class PositionalEncoding(nn.Module):
@@ -161,12 +169,15 @@ class TransformerRegressor(nn.Module):
         max_len: int,
         pooling: PoolingType = "mean",
         head: HeadType = "sigmoid",
+        lexical_features: int = 0,
+        interaction: bool = False,
     ) -> None:
         super().__init__()
         self.d_model = embedding_dim
         self.sep_idx = sep_idx
         self.pooling = pooling
         self.head = head
+        self.interaction_enabled = interaction
         self.embedding = nn.Embedding(
             num_embeddings=vocab_size,
             embedding_dim=embedding_dim,
@@ -188,8 +199,11 @@ class TransformerRegressor(nn.Module):
                 for _ in range(num_layers)
             ]
         )
-        in_features = embedding_dim * POOLING_MULTIPLIER[pooling] + (
-            ALIGN_SCALARS if pooling.startswith("align") else 0
+        in_features = (
+            embedding_dim * POOLING_MULTIPLIER[pooling]
+            + (ALIGN_SCALARS if pooling.startswith("align") else 0)
+            + lexical_features
+            + (PYRAMID_FEATURES if interaction else 0)
         )
         self.regression_head = nn.Linear(
             in_features=in_features,
@@ -199,6 +213,37 @@ class TransformerRegressor(nn.Module):
             name="score_levels",
             tensor=torch.tensor(SCORE_LEVELS),
         )
+        if interaction:
+            self.fusions = nn.ModuleList(
+                [
+                    nn.Linear(
+                        in_features=FUSION_INPUTS * embedding_dim,
+                        out_features=embedding_dim,
+                    )
+                    for _ in range(ALIGNMENT_BLOCKS)
+                ]
+            )
+            self.fusion_norms = nn.ModuleList(
+                [nn.LayerNorm(normalized_shape=embedding_dim) for _ in range(ALIGNMENT_BLOCKS)]
+            )
+            self.pyramid = nn.Sequential(
+                nn.Conv2d(
+                    in_channels=PYRAMID_CHANNELS,
+                    out_channels=PYRAMID_HIDDEN,
+                    kernel_size=PYRAMID_KERNEL,
+                    padding=PYRAMID_KERNEL // 2,
+                ),
+                nn.ReLU(),
+                nn.Conv2d(
+                    in_channels=PYRAMID_HIDDEN,
+                    out_channels=PYRAMID_OUTPUT,
+                    kernel_size=PYRAMID_KERNEL,
+                    padding=PYRAMID_KERNEL // 2,
+                ),
+                nn.ReLU(),
+                nn.AdaptiveMaxPool2d(output_size=(PYRAMID_GRID, PYRAMID_GRID)),
+                nn.Flatten(),
+            )
         nn.init.normal_(
             tensor=self.embedding.weight,
             mean=0.0,
@@ -390,18 +435,129 @@ class TransformerRegressor(nn.Module):
             mask=attention_mask,
         )
 
+    def align_tokens(
+        self,
+        *,
+        x: torch.Tensor,
+        anchor_mask: torch.Tensor,
+        target_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        scores = torch.matmul(x, x.transpose(1, 2)) / math.sqrt(x.size(-1))
+        to_target = (
+            torch.softmax(
+                scores.masked_fill(target_mask[:, None, :] == 0, MASK_FILL),
+                dim=-1,
+            )
+            @ x
+        )
+        to_anchor = (
+            torch.softmax(
+                scores.masked_fill(anchor_mask[:, None, :] == 0, MASK_FILL),
+                dim=-1,
+            )
+            @ x
+        )
+        other = (1.0 - anchor_mask - target_mask).clamp(min=0.0)
+        return anchor_mask[..., None] * to_target + target_mask[..., None] * to_anchor + other[..., None] * x
+
+    def refine(
+        self,
+        *,
+        x: torch.Tensor,
+        anchor_mask: torch.Tensor,
+        target_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        for fusion, norm in zip(self.fusions, self.fusion_norms):
+            aligned = self.align_tokens(
+                x=x,
+                anchor_mask=anchor_mask,
+                target_mask=target_mask,
+            )
+            fused = torch.relu(
+                fusion(
+                    torch.cat(
+                        [x, aligned, x - aligned, x * aligned],
+                        dim=-1,
+                    )
+                )
+            )
+            x = norm(x + self.dropout(fused))
+        return x
+
+    @staticmethod
+    def interaction(
+        *,
+        x: torch.Tensor,
+        embedded: torch.Tensor,
+        input_ids: torch.Tensor,
+        anchor_mask: torch.Tensor,
+        target_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        encoded = F.normalize(
+            x,
+            dim=-1,
+        )
+        embeddings = F.normalize(
+            embedded,
+            dim=-1,
+        )
+        channels = [
+            torch.matmul(encoded, encoded.transpose(1, 2)),
+            torch.matmul(embeddings, embeddings.transpose(1, 2)),
+            (input_ids[:, :, None] == input_ids[:, None, :]).float(),
+        ]
+        pair_mask = anchor_mask[:, :, None] * target_mask[:, None, :]
+        return (
+            torch.stack(
+                channels,
+                dim=1,
+            )
+            * pair_mask[:, None]
+        )
+
     def forward(
         self,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
+        lexical: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        x = self.dropout(self.pos_encoder(self.embedding(input_ids) * math.sqrt(self.d_model)))
+        embedded = self.embedding(input_ids)
+        x = self.dropout(self.pos_encoder(embedded * math.sqrt(self.d_model)))
         for layer in self.encoder_layers:
             x = layer(x, attention_mask)
-        pooled = self.pool(
-            x=x,
-            input_ids=input_ids,
-            attention_mask=attention_mask,
+        parts = []
+        if self.interaction_enabled:
+            anchor_mask, target_mask = self.segment_masks(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+            )
+            x = self.refine(
+                x=x,
+                anchor_mask=anchor_mask,
+                target_mask=target_mask,
+            )
+            parts.append(
+                self.pyramid(
+                    self.interaction(
+                        x=x,
+                        embedded=embedded,
+                        input_ids=input_ids,
+                        anchor_mask=anchor_mask,
+                        target_mask=target_mask,
+                    )
+                )
+            )
+        pooled = torch.cat(
+            [
+                self.pool(
+                    x=x,
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                ),
+                *parts,
+                *([lexical] if lexical is not None and lexical.size(-1) else []),
+            ],
+            dim=-1,
         )
         if self.head == "softmax":
             return (

@@ -55,6 +55,7 @@ def build_similarity_config(
     *,
     args: argparse.Namespace,
     name: str,
+    seeds: Sequence[int],
 ) -> SimilarityRunConfig:
     from src.data.classes.settings import SimilarityRunConfig, SimilaritySettings
     from src.services.similarity import PRESETS
@@ -63,8 +64,8 @@ def build_similarity_config(
         data_dir=args.data_dir,
         output_dir=args.output_dir or default_output_dir(name=name),
         device_id=args.device_id,
-        members=PRESETS[args.preset],
-        seed=args.seed,
+        preset=PRESETS[args.preset],
+        seeds=tuple(seeds),
         settings=SimilaritySettings(epochs=args.epochs),
     )
 
@@ -76,6 +77,7 @@ def run_problem2(args: argparse.Namespace) -> int:
         config=build_similarity_config(
             args=args,
             name=f"p2_{args.preset}",
+            seeds=args.seeds,
         )
     )
     print(", ".join(f"{key}={value:.4f}" for key, value in summary.items()))
@@ -89,6 +91,7 @@ def run_problem2_heads(args: argparse.Namespace) -> int:
         config=build_similarity_config(
             args=args,
             name="p2_head_comparison",
+            seeds=(args.seed,),
         )
     )
     print(table.to_string())
@@ -178,9 +181,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     problem2.add_argument(
         "--preset",
-        choices=("single", "v9"),
-        default="v9",
+        choices=("single", "v9", "v15"),
+        default="v15",
         help="ensemble preset",
+    )
+    problem2.add_argument(
+        "--seeds",
+        nargs="+",
+        type=int,
+        default=(42, 43),
+        help="one ensemble member per seed and configuration",
     )
     problem2.set_defaults(handler=run_problem2)
 

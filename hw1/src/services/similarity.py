@@ -10,7 +10,8 @@ from torch import nn, optim
 from torch.utils.data import DataLoader
 
 from src.data.classes.results import RegressionHistory
-from src.data.classes.settings import EnsembleMember, SimilarityRunConfig, SimilaritySettings
+from src.data.classes.settings import EnsembleMember, SimilarityPreset, SimilarityRunConfig, SimilaritySettings
+from src.data.loaders.pair_features import AnchorNeighbourIndex, PairFeatureBuilder
 from src.data.loaders.similarity import PAD_TOKEN, SEP_TOKEN, build_loader, build_vocab, load_frame
 from src.models.transformer import TransformerRegressor
 from src.services.store import ResultStore
@@ -27,84 +28,93 @@ REGRESSION_PANELS = (
     ("val_loss", "Validation loss", "MSE"),
     ("val_pearson", "Validation Pearson", "Pearson correlation"),
 )
-PRESETS: dict[str, tuple[EnsembleMember, ...]] = {
-    "single": (
-        EnsembleMember(
-            nhead=4,
-            pooling="segment",
-        ),
+ENSEMBLE_MEMBERS: tuple[EnsembleMember, ...] = (
+    EnsembleMember(
+        nhead=4,
+        pooling="segment",
     ),
-    "v9": (
-        EnsembleMember(
-            nhead=4,
-            pooling="segment",
-        ),
-        EnsembleMember(
-            nhead=8,
-            pooling="segment",
-        ),
-        EnsembleMember(
-            nhead=4,
-            pooling="align_max",
-        ),
-        EnsembleMember(
-            nhead=4,
-            pooling="align",
-        ),
-        EnsembleMember(
-            nhead=1,
-            pooling="align_max",
-            learning_rate=1e-3,
-            weight_decay=0.05,
-        ),
-        EnsembleMember(
-            nhead=8,
-            pooling="align_max",
-            learning_rate=1e-3,
-            weight_decay=0.05,
-        ),
-        EnsembleMember(
-            nhead=4,
-            pooling="segment",
-            head="softmax",
-            learning_rate=1e-3,
-            weight_decay=0.05,
-        ),
-        EnsembleMember(
-            nhead=8,
-            pooling="segment",
-            head="softmax",
-            learning_rate=1e-3,
-            weight_decay=0.05,
-        ),
-        EnsembleMember(
-            nhead=4,
-            pooling="align_max",
-            head="softmax",
-            learning_rate=1e-3,
-            weight_decay=0.05,
-        ),
-        EnsembleMember(
-            nhead=4,
-            pooling="align",
-            head="softmax",
-            learning_rate=1e-3,
-            weight_decay=0.05,
-        ),
-        EnsembleMember(
-            nhead=1,
-            pooling="align_max",
-            head="softmax",
-            learning_rate=1e-3,
-            weight_decay=0.05,
-        ),
-        EnsembleMember(
-            nhead=8,
-            pooling="align_max",
-            head="softmax",
-            learning_rate=1e-3,
-            weight_decay=0.05,
-        ),
+    EnsembleMember(
+        nhead=8,
+        pooling="segment",
+    ),
+    EnsembleMember(
+        nhead=4,
+        pooling="align_max",
+    ),
+    EnsembleMember(
+        nhead=4,
+        pooling="align",
+    ),
+    EnsembleMember(
+        nhead=1,
+        pooling="align_max",
+        learning_rate=1e-3,
+        weight_decay=0.05,
+    ),
+    EnsembleMember(
+        nhead=8,
+        pooling="align_max",
+        learning_rate=1e-3,
+        weight_decay=0.05,
+    ),
+    EnsembleMember(
+        nhead=4,
+        pooling="segment",
+        head="softmax",
+        learning_rate=1e-3,
+        weight_decay=0.05,
+    ),
+    EnsembleMember(
+        nhead=8,
+        pooling="segment",
+        head="softmax",
+        learning_rate=1e-3,
+        weight_decay=0.05,
+    ),
+    EnsembleMember(
+        nhead=4,
+        pooling="align_max",
+        head="softmax",
+        learning_rate=1e-3,
+        weight_decay=0.05,
+    ),
+    EnsembleMember(
+        nhead=4,
+        pooling="align",
+        head="softmax",
+        learning_rate=1e-3,
+        weight_decay=0.05,
+    ),
+    EnsembleMember(
+        nhead=1,
+        pooling="align_max",
+        head="softmax",
+        learning_rate=1e-3,
+        weight_decay=0.05,
+    ),
+    EnsembleMember(
+        nhead=8,
+        pooling="align_max",
+        head="softmax",
+        learning_rate=1e-3,
+        weight_decay=0.05,
+    ),
+)
+PRESETS: dict[str, SimilarityPreset] = {
+    "single": SimilarityPreset(
+        members=(
+            EnsembleMember(
+                nhead=4,
+                pooling="mean",
+            ),
+        )
+    ),
+    "v9": SimilarityPreset(members=ENSEMBLE_MEMBERS),
+    "v15": SimilarityPreset(
+        members=ENSEMBLE_MEMBERS,
+        pair_features=True,
+        neighbour_features=True,
+        interaction=True,
     ),
 }
 
@@ -115,6 +125,8 @@ def build_model(
     settings: SimilaritySettings,
     vocab: Mapping[str, int],
     device: torch.device,
+    lexical_features: int,
+    interaction: bool,
 ) -> TransformerRegressor:
     return TransformerRegressor(
         vocab_size=len(vocab),
@@ -128,6 +140,8 @@ def build_model(
         max_len=settings.max_len,
         pooling=member.pooling,
         head=member.head,
+        lexical_features=lexical_features,
+        interaction=interaction,
     ).to(device=device)
 
 
@@ -183,8 +197,14 @@ def predict(
 ) -> np.ndarray:
     model.eval()
     outputs = [
-        model(input_ids.to(device=device), attention_mask.to(device=device)).cpu().numpy()
-        for input_ids, attention_mask, _ in loader
+        model(
+            input_ids.to(device=device),
+            attention_mask.to(device=device),
+            features.to(device=device),
+        )
+        .cpu()
+        .numpy()
+        for input_ids, attention_mask, features, _ in loader
     ]
     return np.concatenate(outputs)
 
@@ -199,9 +219,13 @@ def evaluate_model(
 ) -> tuple[float, float, float]:
     model.eval()
     losses, scores, predictions = [], [], []
-    for input_ids, attention_mask, batch_scores in loader:
+    for input_ids, attention_mask, features, batch_scores in loader:
         batch_scores = batch_scores.to(device=device)
-        batch_predictions = model(input_ids.to(device=device), attention_mask.to(device=device))
+        batch_predictions = model(
+            input_ids.to(device=device),
+            attention_mask.to(device=device),
+            features.to(device=device),
+        )
         losses.append(criterion(batch_predictions, batch_scores).item())
         scores.extend(batch_scores.cpu().numpy())
         predictions.extend(batch_predictions.cpu().numpy())
@@ -268,11 +292,14 @@ def train_regressor(
         for _ in range(settings.epochs):
             model.train()
             batch_losses = []
-            for input_ids, attention_mask, scores in train_loader:
+            for input_ids, attention_mask, features, scores in train_loader:
                 optimizer.zero_grad()
-                loss = criterion(
-                    model(input_ids.to(device=device), attention_mask.to(device=device)), scores.to(device=device)
+                predictions = model(
+                    input_ids.to(device=device),
+                    attention_mask.to(device=device),
+                    features.to(device=device),
                 )
+                loss = criterion(predictions, scores.to(device=device))
                 loss.backward()
                 optimizer.step()
                 batch_losses.append(loss.item())
@@ -309,6 +336,7 @@ class SimilarityPipeline:
         self.config = config
         self.store = store
         self.device = select_device(device_id=config.device_id)
+        self.feature_count = 0
 
     def prepare(self) -> tuple[dict[str, pd.DataFrame], dict[str, int], dict[str, DataLoader]]:
         frames = {
@@ -319,6 +347,7 @@ class SimilarityPipeline:
             for name in SPLIT_NAMES
         }
         vocab = build_vocab(frame=frames["train"])
+        features = self.pair_features(frames=frames)
         loaders = {
             name: build_loader(
                 frame=frame,
@@ -326,11 +355,44 @@ class SimilarityPipeline:
                 max_len=self.config.settings.max_len,
                 batch_size=self.config.settings.batch_size,
                 shuffle=name == "train",
+                features=features.get(name),
             )
             for name, frame in frames.items()
         }
-        logger.info("Vocabulary size %d, device %s", len(vocab), self.device)
+        self.feature_count = features["train"].shape[1] if features else 0
+        logger.info("Vocabulary size %d, pair features %d, device %s", len(vocab), self.feature_count, self.device)
         return frames, vocab, loaders
+
+    def pair_features(self, *, frames: Mapping[str, pd.DataFrame]) -> dict[str, torch.Tensor]:
+        preset = self.config.preset
+        if not preset.pair_features:
+            return {}
+        builder = PairFeatureBuilder(
+            neighbours=(
+                AnchorNeighbourIndex(
+                    train_frame=frames["train"],
+                    temperature=self.config.settings.neighbour_temperature,
+                )
+                if preset.neighbour_features
+                else None
+            )
+        )
+        features = {
+            name: builder.build(
+                frame=frame,
+                exclude_self=name == "train",
+            )
+            for name, frame in frames.items()
+        }
+        correlation = pd.DataFrame(
+            data=features["train"].numpy(),
+            columns=list(builder.names),
+        ).corrwith(other=frames["train"]["score"])
+        self.store.save_table(
+            table=correlation.to_frame(name="pearson_with_score"),
+            name="pair_feature_correlation",
+        )
+        return features
 
     def train_member(
         self,
@@ -338,14 +400,17 @@ class SimilarityPipeline:
         member: EnsembleMember,
         vocab: Mapping[str, int],
         loaders: Mapping[str, DataLoader],
+        seed: int,
     ) -> tuple[TransformerRegressor, RegressionHistory]:
         settings = member.resolve(settings=self.config.settings)
-        set_seed(seed=self.config.seed)
+        set_seed(seed=seed)
         model = build_model(
             member=member,
             settings=settings,
             vocab=vocab,
             device=self.device,
+            lexical_features=self.feature_count,
+            interaction=self.config.preset.interaction,
         )
         history = train_regressor(
             model=model,
@@ -353,7 +418,7 @@ class SimilarityPipeline:
             val_loader=loaders["val"],
             settings=settings,
             device=self.device,
-            description=member.name,
+            description=f"{member.name}, seed={seed}",
         )
         return model, history
 
@@ -361,44 +426,47 @@ class SimilarityPipeline:
         frames, vocab, loaders = self.prepare()
         val_true = frames["val"]["score"].to_numpy(dtype=np.float64)
         val_predictions, test_predictions, rows = {}, {}, []
-        for member in self.config.members:
-            model, history = self.train_member(
-                member=member,
-                vocab=vocab,
-                loaders=loaders,
-            )
-            val_predictions[member.name] = predict(
-                model=model,
-                loader=loaders["val"],
-                device=self.device,
-            )
-            test_predictions[member.name] = predict(
-                model=model,
-                loader=loaders["test"],
-                device=self.device,
-            )
-            rows.append(
-                {
-                    "model": member.name,
-                    "val_pearson": pearson_corr(
-                        y_true=val_true,
-                        y_pred=val_predictions[member.name],
-                    ),
-                    "val_rmse": rmse(
-                        y_true=val_true,
-                        y_pred=val_predictions[member.name],
-                    ),
-                    "best_epoch": history.best_epoch,
-                }
-            )
-            logger.info("%s val Pearson %.4f", member.name, rows[-1]["val_pearson"])
+        for seed in self.config.seeds:
+            for member in self.config.preset.members:
+                name = f"{member.name}, seed={seed}"
+                model, history = self.train_member(
+                    member=member,
+                    vocab=vocab,
+                    loaders=loaders,
+                    seed=seed,
+                )
+                val_predictions[name] = predict(
+                    model=model,
+                    loader=loaders["val"],
+                    device=self.device,
+                )
+                test_predictions[name] = predict(
+                    model=model,
+                    loader=loaders["test"],
+                    device=self.device,
+                )
+                rows.append(
+                    {
+                        "model": name,
+                        "val_pearson": pearson_corr(
+                            y_true=val_true,
+                            y_pred=val_predictions[name],
+                        ),
+                        "val_rmse": rmse(
+                            y_true=val_true,
+                            y_pred=val_predictions[name],
+                        ),
+                        "best_epoch": history.best_epoch,
+                    }
+                )
+                logger.info("%s val Pearson %.4f", name, rows[-1]["val_pearson"])
 
         ensemble_val = np.mean(
             list(val_predictions.values()),
             axis=0,
         )
         summary = {
-            "members": len(self.config.members),
+            "members": len(rows),
             "ensemble_val_pearson": pearson_corr(
                 y_true=val_true,
                 y_pred=ensemble_val,
@@ -432,7 +500,7 @@ class SimilarityPipeline:
         self,
         *,
         head_counts: Sequence[int] = HEAD_COUNTS,
-        pooling: str = "segment",
+        pooling: str = "mean",
     ) -> pd.DataFrame:
         frames, vocab, loaders = self.prepare()
         val_true = frames["val"]["score"].to_numpy(dtype=np.float64)
@@ -446,6 +514,7 @@ class SimilarityPipeline:
                 member=member,
                 vocab=vocab,
                 loaders=loaders,
+                seed=self.config.seeds[0],
             )
             predictions = predict(
                 model=model,

@@ -13,3 +13,8 @@ __pycache__/
 **/*.csv
 docs/report
 docs/Asg1_314540080.pdf
+**/*submissions
+hw2/hw2_1_improved.py
+hw2/hw2_1.ipynb
+hw2/hw2_1.py
+hw2/hw2_2.ipynb

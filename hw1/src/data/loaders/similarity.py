@@ -100,6 +100,7 @@ def build_loader(
     max_len: int,
     batch_size: int,
     shuffle: bool,
+    features: torch.Tensor | None = None,
 ) -> DataLoader:
     input_ids, attention_mask = encode_frame(
         frame=frame,
@@ -111,7 +112,12 @@ def build_loader(
         dtype=torch.float,
     )
     return DataLoader(
-        dataset=TensorDataset(input_ids, attention_mask, scores),
+        dataset=TensorDataset(
+            input_ids,
+            attention_mask,
+            features if features is not None else torch.zeros(len(frame), 0),
+            scores,
+        ),
         batch_size=batch_size,
         shuffle=shuffle,
     )

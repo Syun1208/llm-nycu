@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PYTHON="${PYTHON:-python}"
-RUN_DATE="${RUN_DATE:-$(date +%F)}"
+PROJECT_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+PYTHON=python
+RUN_DATE=$(date +%F)
+OUTPUT_DIR=outputs/${RUN_DATE}_p1_language_id
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
-export CUDA_VISIBLE_DEVICES=7
+export CUDA_VISIBLE_DEVICES=0
 
 cd "${PROJECT_ROOT}"
-OUTPUT_DIR="${OUTPUT_DIR:-outputs/${RUN_DATE}_p1_language_id}"
-
 "${PYTHON}" main.py p1 \
     --epochs 40 \
     --output-dir "${OUTPUT_DIR}" \
